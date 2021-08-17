@@ -164,16 +164,23 @@ public:
     }
     
     void cloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg){
-
+        // Step 1 将ros点云转成pcl格式点云
         copyPointCloud(laserCloudMsg);
+        // Step 2 查找点云的开始角度与结束角度
         findStartEndAngle();
+        // Step 3 将点云投影到16线上的哪根线与竖轴的哪一列上，并取range
         projectPointCloud();
+        // Step 4 将地面点进行区分，并将地面点和无效点进行标记，得到除地面点和无效点的有效聚类点
         groundRemoval();
+        // Step 5 将有效点进行聚类搜索，并将地面点进行过滤，只取1/5地面点
         cloudSegmentation();
+        // Step 6 将分类好的点云数据发布出去
         publishCloud();
+        // Step 7 重置这一帧的相关点云数据
         resetParameters();
     }
 
+    // ? 不知道为啥要有这一步
     void findStartEndAngle(){
         // 雷达坐标系：右->X,前->Y,上->Z
         // 雷达内部旋转扫描方向：Z轴俯视下来，顺时针方向（Z轴右手定则反向）
@@ -261,6 +268,7 @@ public:
             range = sqrt(thisPoint.x * thisPoint.x + thisPoint.y * thisPoint.y + thisPoint.z * thisPoint.z);
             rangeMat.at<float>(rowIdn, columnIdn) = range;
 
+            // ? 这里的intensity为啥是使用index生成的
 			// columnIdn:[0,H] (H:Horizon_SCAN)==>[0,1800]
             thisPoint.intensity = (float)rowIdn + (float)columnIdn / 10000.0;
 
@@ -278,13 +286,14 @@ public:
 
         for (size_t j = 0; j < Horizon_SCAN; ++j){
             // groundScanInd 是在 utility.h 文件中声明的线数，groundScanInd=7
+            // : 为啥这个groundScanInd是7 -- 应该是因为雷达水平放置，7表示雷达16根线束往下打的线束才有可能打到地面
             for (size_t i = 0; i < groundScanInd; ++i){
 
                 lowerInd = j + ( i )*Horizon_SCAN;
                 upperInd = j + (i+1)*Horizon_SCAN;
 
                 // 初始化的时候用nanPoint.intensity = -1 填充
-                // 都是-1 证明是空点nanPoint
+                // 都是-1 证明是空点nanPoint 空点直接返回不进行地面点判断
                 if (fullCloud->points[lowerInd].intensity == -1 ||
                     fullCloud->points[upperInd].intensity == -1){
                     groundMat.at<int8_t>(i,j) = -1;
@@ -344,6 +353,7 @@ public:
 			// segMsg.endRingIndex[i]
 			// 表示第i线的点云起始序列和终止序列
 			// 以开始线后的第6线为开始，以结束线前的第6线为结束
+            // ? 不知道为啥这里需要 -1+5
             segMsg.startRingIndex[i] = sizeOfSegCloud-1 + 5;
 
             for (size_t j = 0; j < Horizon_SCAN; ++j) {
@@ -378,6 +388,7 @@ public:
             }
 
             // 以结束线前的第5线为结束
+            // ? 不知道为啥这里需要 -1+5
             segMsg.endRingIndex[i] = sizeOfSegCloud-1 - 5;
         }
 
@@ -460,6 +471,7 @@ public:
 
 				// 通过下面的公式计算这两点之间是否有平面特征
 				// atan2(y,x)的值越大，d1，d2之间的差距越小,越平坦
+                // : 通过这个方法得到聚类点不会相差太远，基本上都是在附近的点
                 angle = atan2(d2*sin(alpha), (d1 -d2*cos(alpha)));
 
                 if (angle > segmentTheta){
@@ -511,12 +523,13 @@ public:
     // 发布各类点云内容
     void publishCloud(){
     	// 发布cloud_msgs::cloud_info消息
+        // : 把处理好的数据发布出去，哪些点是地面点，哪些点是有效点，有效点属于哪个聚类
         segMsg.header = cloudHeader;
         pubSegmentedCloudInfo.publish(segMsg);
 
         sensor_msgs::PointCloud2 laserCloudTemp;
 
-		// pubOutlierCloud发布界外点云
+		// pubOutlierCloud发布界外点云      
         pcl::toROSMsg(*outlierCloud, laserCloudTemp);
         laserCloudTemp.header.stamp = cloudHeader.stamp;
         laserCloudTemp.header.frame_id = "base_link";

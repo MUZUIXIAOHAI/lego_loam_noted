@@ -428,6 +428,7 @@ public:
         p->z = z5 + imuShiftFromStartZCur;
     }
 
+    // ? 为什么要进行坐标变换，位移具体是咋用的
     void AccumulateIMUShiftAndRotation()
     {
         float roll = imuRoll[imuPointerLast];
@@ -492,6 +493,7 @@ public:
         }
     }
 
+    // : 接收IMU数据
     void imuHandler(const sensor_msgs::Imu::ConstPtr& imuIn)
     {
         double roll, pitch, yaw;
@@ -523,6 +525,7 @@ public:
         AccumulateIMUShiftAndRotation();
     }
 
+    // : 接收地面分割且聚类模块分割完成的有效点云，该点云包含了1/5的地面点以及有效聚类点
     void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr& laserCloudMsg){
 
         cloudHeader = laserCloudMsg->header;
@@ -531,11 +534,13 @@ public:
         timeNewSegmentedCloud = timeScanCur;
 
         segmentedCloud->clear();
+        // : 该点云只有点位置信息，需要结合info topic使用
         pcl::fromROSMsg(*laserCloudMsg, *segmentedCloud);
 
         newSegmentedCloud = true;
     }
 
+    // : 接收外点点云，外点表示聚类失败的点，是有效点，但数量不够不能构成一个聚类
     void outlierCloudHandler(const sensor_msgs::PointCloud2ConstPtr& msgIn){
 
         timeNewOutlierCloud = msgIn->header.stamp.toSec();
@@ -546,6 +551,7 @@ public:
         newOutlierCloud = true;
     }
 
+    // : 接收点云分割信息，结合分割点云一起使用 最新的分割信息放在 segInfo
     void laserCloudInfoHandler(const cloud_msgs::cloud_infoConstPtr& msgIn)
     {
         timeNewSegmentedCloudInfo = msgIn->header.stamp.toSec();
@@ -571,6 +577,7 @@ public:
             // ori表示的是偏航角yaw，因为前面有负号，ori=[-M_PI,M_PI)
             // 因为segInfo.orientationDiff表示的范围是(PI,3PI)，在2PI附近
             // 下面过程的主要作用是调整ori大小，满足start<ori<end
+            // ? 这里计算ori的不是很懂
             float ori = -atan2(point.x, point.z);
             if (!halfPassed) {
                 if (ori < segInfo.startOrientation - M_PI / 2)
@@ -595,6 +602,7 @@ public:
             }
 
             // 用 point.intensity 来保存时间
+            // ?????
             float relTime = (ori - segInfo.startOrientation) / segInfo.orientationDiff;
             point.intensity = int(segmentedCloud->points[i].intensity) + scanPeriod * relTime;
 
@@ -716,6 +724,7 @@ public:
 
     // 计算光滑性，这里的计算没有完全按照公式进行，
     // 缺少除以总点数i和r[i]
+    // : 这里和论文有点不一样，平滑度直接取周围十个点的diss和的平方，论文是diss和的绝对值再除以总点数i和r[i]
     void calculateSmoothness()
     {
         int cloudSize = segmentedCloud->points.size();
@@ -754,6 +763,7 @@ public:
             float depth2 = segInfo.segmentedCloudRange[i+1];
             int columnDiff = std::abs(int(segInfo.segmentedCloudColInd[i+1] - segInfo.segmentedCloudColInd[i]));
 
+            // : 这里表示纵向分辨率十个以内，表示挨的近的点，因为点云是经过过滤的，所以需要这样取
             if (columnDiff < 10){
 
                 // 选择距离较远的那些点，并将他们标记为1
@@ -778,11 +788,13 @@ public:
             float diff2 = std::abs(segInfo.segmentedCloudRange[i+1] - segInfo.segmentedCloudRange[i]);
 
             // 选择距离变化较大的点，并将他们标记为1
+            // : 这里表示与前后两个点的距离变化大，同时
             if (diff1 > 0.02 * segInfo.segmentedCloudRange[i] && diff2 > 0.02 * segInfo.segmentedCloudRange[i])
                 cloudNeighborPicked[i] = 1;
         }
     }
 
+    // : 特征提取
     void extractFeatures()
     {
         cornerPointsSharp->clear();
@@ -796,7 +808,7 @@ public:
 
             for (int j = 0; j < 6; j++) {
 
-                // sp和ep的含义是什么???startPointer,endPointer?
+                // ? sp和ep的含义是什么???startPointer,endPointer?
                 int sp = (segInfo.startRingIndex[i] * (6 - j)    + segInfo.endRingIndex[i] * j) / 6;
                 int ep = (segInfo.startRingIndex[i] * (5 - j)    + segInfo.endRingIndex[i] * (j + 1)) / 6 - 1;
 
@@ -2035,6 +2047,7 @@ public:
     void runFeatureAssociation()
     {
         // 如果有新数据进来则执行，否则不执行任何操作
+        // : 接收到了新的分类点云、分类信息以及外点点云
         if (newSegmentedCloud && newSegmentedCloudInfo && newOutlierCloud &&
             std::abs(timeNewSegmentedCloudInfo - timeNewSegmentedCloud) < 0.05 &&
             std::abs(timeNewOutlierCloud - timeNewSegmentedCloud) < 0.05){
@@ -2047,14 +2060,15 @@ public:
         }
 
         // 主要进行的处理是将点云数据进行坐标变换，进行插补等工作
+        // ? 这里看代码实在是太难懂，只知道是利用了IMU对点云数据做了去畸变处理
         adjustDistortion();
 
         // 不完全按照公式进行光滑性计算，并保存结果
         calculateSmoothness();
 
         // 标记阻塞点??? 阻塞点是什么点???
-        // 参考了csdn若愚maimai大佬的博客，这里的阻塞点指过近的点
-        // 指在点云中可能出现的互相遮挡的情况
+        // :参考了csdn若愚maimai大佬的博客，这里的阻塞点指过近的点
+        // :指在点云中可能出现的互相遮挡的情况
         markOccludedPoints();
 
         // 特征抽取，然后分别保存到cornerPointsSharp等等队列中去
